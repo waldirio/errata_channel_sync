@@ -1,113 +1,116 @@
-#!/usr/bin/python
-import xmlrpclib
-import ConfigParser 
-import os
-import time
+#!/usr/bin/perl
+use Frontier::Client;
+use warnings;
+use Data::Dumper;
 
 ############################################################
-#
-# Configuration Defaults 
+# Used to merge any packages that are in an original channel 
+# that are not in the destination into the destination.
 # 
-
-CREDS_FILE = 'rhn_api.credentials'
-CREDS_PATH = os.path.dirname(os.path.realpath(__file__)) + "/" + CREDS_FILE
-
-# Best to store this as CREDS_FILE in dir w/ this script:
+# USAGE: edit the Configuration section below to contain 
+#        valid host/user credentials; and two channel names
+#        where any packages not in orig channel will be
+#        added to the dest channel.
 #
-# [credentials]
-# sat_url = https://<host>/rpc/api
-# sat_user = <username>
-# sat_pass = <password>
+#
 
-config = ConfigParser.ConfigParser( defaults={
-   'sat_url':'https://rhn.redhat.com/rpc/api',
-   'sat_user':'<username>',
-   'sat_pass':'<password>'
-})
 
 ############################################################
-#
-# Load Credentials from file
-#
-try:
-   config.readfp(open(CREDS_PATH))
-except IOError:
-   config.add_section('credentials')
-   pass
-finally:
-   sat_url  = config.get('credentials','sat_url')
-   sat_user = config.get('credentials','sat_user')
-   sat_pass = config.get('credentials','sat_pass')
+# Configuration 
+############################################################
+
+# Satellite host to connect to (domain name) http://$HOST/rpc/api
+my $SAT_HOST = 'sat-hostname-here'; 
+
+# Satellite admin username/password
+my $SAT_USER = 'sat-admin-here';
+my $SAT_PASS = 'sat-password-here';
+
+# Channels to compare and merge
+# (packages in orig that are not in dest are added to dest)
+my $origchannellabel = "original-channel-name-here";
+my $destchannellabel = "destination-channel-name-here";
+
+# Debug for API calls (1 to enable, 0 to disable)
+my $DEBUG_API = 0;
+
 
 ############################################################
-#
-# helper functions
-#
+# Helper Functions 
+############################################################
 
-def testBzFixes(erratas,delay=0):
-   """Request and Print bugzillaFixes for each `errata`. """   
-   for ename in erratas:
-      print "== Puling errata " + ename  + " ..."
-      rslts = client.errata.bugzilla_fixes(key,ename)
-      print str(rslts) + '\n'
-      if delay > 0: #and len(erratas) > 1:
-         time.sleep(delay)
+# Helper to transform package objects to list of names
+sub getNames {
+    my ($pkgs) = @_;
+    return map { $_->{'name'} . '-' . $_->{'version'}
+		 . '-' . $_->{'release'}
+		 . '.' . $_->{'arch_label'}
+    } @$pkgs;
+}
+
+# Helper to transform package objects to list of pkg ids
+sub getPkgIDs {
+    my ($pkgs) = @_;
+    return map { $_->{'id'} } @$pkgs;
+}
+
 
 ############################################################
-#
-# Authenticate and run tests
-#
+# Main Code to merge channel packages
+############################################################
 
-### Authenticate against Server + Get session key
-client = xmlrpclib.Server(sat_url, verbose=0)
-key = client.auth.login(sat_user, sat_pass)
-
-
-### Test simple api call (user info)
-uinfo = client.user.get_details(key,sat_user)
-print "If auth worked then user info is below:"
-print str(uinfo) + '\n'
+## Setup connection and login to Satellite API
+my $client = new Frontier::Client(url => "http://$SAT_HOST/rpc/api", debug=>$DEBUG_API);
+my $session = $client->call('auth.login', $SAT_USER, $SAT_PASS );
 
 
-### Test errata.bugzilla_fixes
-testBzFixes(['RHSA-2013:0614'])
+# Grab list of packages in Original channel
+print "\nPulling list of packages in Original channel: '$origchannellabel' ...\n";
+my $orig_pkgs = $client->call('channel.software.listAllPackages', $session, $origchannellabel);
+
+# Grab list of packages in Destination channel
+print "\nPulling list of packages in Destination channel: '$destchannellabel' ...\n";
+my $dest_pkgs = $client->call('channel.software.listAllPackages', $session, $destchannellabel);
 
 
-### Trouble errata 
-testBzFixes(['RHEA-2013:1025','RHEA-2013:0880'],2)
+#Convert packages lists to array of package names
+#my @orig_names = getNames($orig_pkgs);
+#my @dest_names = getNames($dest_pkgs);
+#print "=======ORIG========\n";
+#print "names:@orig_names\n";
+#print "=======DEST========\n";
+#print "names:@dest_names\n";
 
-### Test NEW Trouble errata
-print "Testing NEW errata..."
-#/RHEA-2013:1025/, /RHEA-2013:0880/ , /RHBA-2013:0032/ , /RHBA-2011:0755/
-testBzFixes(['RHEA-2013:1025','RHEA-2013:0880','RHBA-2013:0032','RHBA-2011:0755'],2)
+# Convert packages list to array of package IDs
+my @orig_ids = getPkgIDs($orig_pkgs);
+my @dest_ids = getPkgIDs($dest_pkgs);
 
-### Pull all package id for pkg_name, check bugzillaFixes for their errata.
+# Diff the destination (minimal) w/ original (ie. get missing packages)
+my %minimal = map {($_, 1)} @dest_ids;
+my @missing = grep {!$minimal{$_}} @orig_ids;
 
-pkg_name  = 'tzdata'
-chan_name = 'rhel-x86_64-server-6'
+# Print list of packages that will be added
+#print "missing: @missing\n";
 
-print "== Pulling package list for channel: " + chan_name + " ..."
-pkgs = client.channel.software.list_all_packages(key,chan_name)
-print "channel " + chan_name + " contains: " + str(len(pkgs)) + " packages."
 
-print "== Filtering out packages for " + pkg_name + " ..."
-pkg_matches = list(pkg for pkg in pkgs if pkg['package_name'] == pkg_name)
-print "found " + str(len(pkg_matches)) + " matches."
-print str(pkg_matches)
-# be picky and get list of just IDs (for short display)
-tz_ids = map(lambda x:x['package_id'],pkg_matches)
-print "package ids:" + str(tz_ids) + '\n'
+# Abort if no packages are missing, otherwise continue
+if($#missing < 1){
+    print "\nNo Packages in '$origchannellabel' missing from '$destchannellabel'.\n";
+    goto FINISH;
+} else {
+    print "\nNow merging $#missing packages into '$destchannellabel'.\n";
+}
 
-# Collect bz for each errata, for each id of pkg_name
-print "== Pulling errata for " + pkg_name + " IDs ..."
-for p in tz_ids:
-   # grab errata list for current package id, then bz for each errata
-   elist = client.packages.list_providing_errata(key,p)
-   for e_id in elist:
-      bzl = client.errata.bugzilla_fixes(key,e_id['errata_advisory'])
-      print "id-" + str(p) + "[" + e_id['errata_advisory'] + "] " + str(bzl)
-      time.sleep(1)
-   
+# Add missing packages to destination channel
+my $result = $client->call('channel.software.addPackages', $session, $destchannellabel, \@missing);
 
-# Close API session
-client.auth.logout(key)
+print "done merging; (" . Dumper($result) . ")\n";
+
+
+## Clean up and exit 
+
+FINISH:
+
+## Close connection to Satellite.
+print "\nLogging out...\n";
+$client->call('auth.logout', $session);
