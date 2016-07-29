@@ -3,6 +3,17 @@ use Frontier::Client;
 use warnings;
 use Data::Dumper;
 
+
+#
+# Date ......: 07/29/2016
+# Developer .: Rikki / Foots <your email here>
+# Purpose ...: Sync clonned channel (packages and erratas)
+# Changelog .:
+#    		07/29/2016 | Waldirio M Pinheiro <waldirio@redhat.com>
+#    		  - Step to get advisory_name and clone to the channel
+#    		
+
+
 ############################################################
 # Used to merge any packages that are in an original channel 
 # that are not in the destination into the destination.
@@ -28,8 +39,8 @@ my $SAT_PASS = 'redhat';
 
 # Channels to compare and merge
 # (packages in orig that are not in dest are added to dest)
-my $origchannellabel = " rhel-x86_64-server-6";
-my $destchannellabel = "waldirio-rhel-x86_64-server-6";
+my $origchannellabel = "rhel-x86_64-server-6";
+my $destchannellabel = "waldirio-rhel6-x86_64-clone-01";
 
 # Debug for API calls (1 to enable, 0 to disable)
 my $DEBUG_API = 0;
@@ -54,6 +65,11 @@ sub getPkgIDs {
     return map { $_->{'id'} } @$pkgs;
 }
 
+# Helper to transform package objects to list of advisory name 
+sub getPkgADV {
+    my ($pkgs) = @_;
+    return map { $_->{'advisory_name'} } @$pkgs;
+}
 
 ############################################################
 # Main Code to merge channel packages
@@ -62,6 +78,20 @@ sub getPkgIDs {
 ## Setup connection and login to Satellite API
 my $client = new Frontier::Client(url => "http://$SAT_HOST/rpc/api", debug=>$DEBUG_API);
 my $session = $client->call('auth.login', $SAT_USER, $SAT_PASS );
+
+
+# Erratas
+print "\nGetting all Erratas \n";
+my $errata_list = $client->call('channel.software.listErrata', $session, $origchannellabel);
+
+my @errata_list_array = getPkgADV($errata_list);
+
+# Clonning one errata per time
+foreach $i (@errata_list_array)
+{
+  print "Clonning ERRATA $i\n";
+  my $clone_pkgs = $client->call('errata.clone', $session, $destchannellabel,[$i]);
+}
 
 
 # Grab list of packages in Original channel
@@ -96,8 +126,8 @@ my @missing = grep {!$minimal{$_}} @orig_ids;
 # Abort if no packages are missing, otherwise continue
 if($#missing < 1){
     print "\nNo Packages in '$origchannellabel' missing from '$destchannellabel'.\n";
-#    goto FINISH;
-    goto ERRATA;
+    goto FINISH;
+##    goto ERRATA;
 } else {
     print "\nNow merging $#missing packages into '$destchannellabel'.\n";
 }
@@ -107,16 +137,21 @@ my $result = $client->call('channel.software.addPackages', $session, $destchanne
 
 print "done merging; (" . Dumper($result) . ")\n";
 
-ERRATA:
-print "\nMerging all Erratas from: '$origchannellabel' to: '$destchannellabel' ..\n";
-my $merge_pkgs = $client->call('channel.software.mergeErrata', $session, $origchannellabel, $destchannellabel);
+##ERRATA:
 
-#print "Merge values: $merge_pkgs";
-#my @aux = getPkgIDs($merge_pkgs);
-#print "Merge values: @aux";
+##print "\nGetting all Erratas \n";
+##my $errata_list = $client->call('channel.software.listErrata', $session, $origchannellabel);
 
-print "\nSyncing Repo: '$destchannellabel' ..\n";
-my $aux1 = $client->call('channel.software.syncErrata', $session, $destchannellabel);
+##my @errata_list_array = getPkgADV($errata_list);
+
+# Clonning one errata per time
+##foreach $i (@errata_list_array)
+##{
+##  print "Clonning ERRATA $i\n";
+##  my $clone_pkgs = $client->call('errata.clone', $session, $destchannellabel,[$i]);
+##}
+
+
 
 ## Clean up and exit 
 
